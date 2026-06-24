@@ -8,3 +8,11 @@ During IMPLEMENT:
 - If a step is too large to complete in one turn, implement the first concrete piece and state clearly what remains
 
 If you find yourself writing what you *intend* to do rather than doing it, stop and invoke the appropriate tool instead.
+
+## Validation Discipline
+
+When BAML source files or generated BAML client behavior are changed, run the BAML native tests in addition to source checks and Python tests:
+
+```bash
+uv run baml-cli test
+```
