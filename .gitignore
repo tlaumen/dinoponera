@@ -5,6 +5,13 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+
+# Local environment / credentials
+.env
+.envrc
 
 # Virtual environments
 .venv
+env/
+venv/

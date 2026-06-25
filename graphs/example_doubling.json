@@ -1,0 +1,23 @@
+{
+  "name": "example_doubling",
+  "terminal_node_id": "format_result",
+  "nodes": [
+    "format_result",
+    "double_value",
+    "example_source_value"
+  ],
+  "edges": [
+    {
+      "from_node": "example_source_value",
+      "to_node": "double_value",
+      "to_input": "base",
+      "type": "calc_types.example.BaseValue"
+    },
+    {
+      "from_node": "double_value",
+      "to_node": "format_result",
+      "to_input": "doubled",
+      "type": "calc_types.example.DoubledValue"
+    }
+  ]
+}

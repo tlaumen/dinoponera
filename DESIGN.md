@@ -1026,35 +1026,35 @@ Compatibility constraints for new artifacts:
 
 Implementation checklist:
 
-- [ ] `pyproject.toml` includes Pydantic, pytest, and BAML tooling.
-- [ ] `dinoponera/core/` modules exist.
-- [ ] `dinoponera/agent/` modules exist.
-- [ ] `calc_types/` exists with `__init__.py`.
-- [ ] `registry/` exists with `decorators.py`, `index.py`, and `nodes/`.
-- [ ] `graphs/` output path is created or handled by planning code.
-- [ ] `runs/` output path is created or handled by script-generation code.
-- [ ] `NodeInput`, `NodeSummary`, `Edge`, `CalculationGraph`, `QA`, `StateSummary`, `UnresolvedInput`, `ApplicabilityResponse`, and `SourceGapResponse` are Pydantic models.
-- [ ] `CalculationGraph.model_dump_json()` and `CalculationGraph.model_validate_json()` are used for graph files.
-- [ ] `Edge.to_input` and `UnresolvedInput.input_name` are used anywhere a downstream input is matched or satisfied.
-- [ ] `@node` attaches `_node_metadata`.
-- [ ] `build_summary()` uses function signatures and metadata.
-- [ ] Registry rejects/clearly fails missing metadata and missing annotations.
-- [ ] `BreadthFirstTraversal` skips `data_retrieval` and `user_input` nodes.
-- [ ] Lint detects cycles and unsatisfied named inputs.
-- [ ] Lint remains pure and does not depend on `UserInteractor` or mutate registry files.
-- [ ] Leaf stub generation creates data-retrieval/user-input stubs and updates `registry/index.py` plus in-memory `NODES`.
-- [ ] Phase 2 `NoCandidate` uses source-gap resolution instead of immediately failing; it only raises `MissingNodeError` when the user classifies the gap as a missing computation node.
-- [ ] Phase 1 and Phase 2 planning loops are implemented.
-- [ ] Direct BAML calls are localized to `dinoponera/agent/planning.py`.
-- [ ] BAML function input/output object structures are declared in `.baml` files, not mirrored as Python Pydantic result models.
-- [ ] Core modules do not import BAML.
-- [ ] Core modules do not call `input()` or `print()` for decisions.
-- [ ] Approved graphs are written to `graphs/{name}.json`.
-- [ ] Script generation writes `runs/run_{graph.name}.py`.
-- [ ] Generated scripts contain no BAML calls.
-- [ ] Python tests exist for core and agent modules.
-- [ ] BAML-native tests exist in `.baml` files for `baml_identify_goal` and `baml_extend_graph`, at least two tests each.
-- [ ] Development validation documentation includes both `pytest` and the BAML-native test command.
+- [x] `pyproject.toml` includes Pydantic, pytest, and BAML tooling.
+- [x] `dinoponera/core/` modules exist.
+- [x] `dinoponera/agent/` modules exist.
+- [x] `calc_types/` exists with `__init__.py`.
+- [x] `registry/` exists with `decorators.py`, `index.py`, and `nodes/`.
+- [x] `graphs/` output path is created or handled by planning code.
+- [x] `runs/` output path is created or handled by script-generation code.
+- [x] `NodeInput`, `NodeSummary`, `Edge`, `CalculationGraph`, `QA`, `StateSummary`, `UnresolvedInput`, `ApplicabilityResponse`, and `SourceGapResponse` are Pydantic models.
+- [x] `CalculationGraph.model_dump_json()` and `CalculationGraph.model_validate_json()` are used for graph files.
+- [x] `Edge.to_input` and `UnresolvedInput.input_name` are used anywhere a downstream input is matched or satisfied.
+- [x] `@node` attaches `_node_metadata`.
+- [x] `build_summary()` uses function signatures and metadata.
+- [x] Registry rejects/clearly fails missing metadata and missing annotations.
+- [x] `BreadthFirstTraversal` skips `data_retrieval` and `user_input` nodes.
+- [x] Lint detects cycles and unsatisfied named inputs.
+- [x] Lint remains pure and does not depend on `UserInteractor` or mutate registry files.
+- [x] Leaf stub generation creates data-retrieval/user-input stubs and updates `registry/index.py` plus in-memory `NODES`.
+- [x] Phase 2 `NoCandidate` uses source-gap resolution instead of immediately failing; it only raises `MissingNodeError` when the user classifies the gap as a missing computation node.
+- [x] Phase 1 and Phase 2 planning loops are implemented.
+- [x] Direct BAML calls are localized to `dinoponera/agent/planning.py`.
+- [x] BAML function input/output object structures are declared in `.baml` files, not mirrored as Python Pydantic result models.
+- [x] Core modules do not import BAML.
+- [x] Core modules do not call `input()` or `print()` for decisions.
+- [x] Approved graphs are written to `graphs/{name}.json`.
+- [x] Script generation writes `runs/run_{graph.name}.py`.
+- [x] Generated scripts contain no BAML calls.
+- [x] Python tests exist for core and agent modules.
+- [x] BAML-native tests exist in `.baml` files for the Python wrapper concepts `baml_identify_goal` and `baml_extend_graph` via generated BAML functions `IdentifyGoal` and `ExtendGraph`, at least two tests each.
+- [x] Development validation documentation includes both `pytest` and the BAML-native test command.
 
 Implementability checks against current repo:
 
