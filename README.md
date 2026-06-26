@@ -56,6 +56,18 @@ It will:
 6. warn if generated leaf stubs still need implementation,
 7. ask whether to execute the generated script now.
 
+Try these prompts with the current geotechnical registry nodes:
+
+```text
+Calculate settlement for a layered soil profile.
+```
+
+```text
+Calculate CPT-based pile foundation capacity.
+```
+
+The `calculate.py` path uses BAML planning, so live provider credentials must be configured in `.env`.
+
 ## Deterministic example loop
 
 The lower-level deterministic loop can build and execute the example without BAML:

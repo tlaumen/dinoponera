@@ -16,6 +16,7 @@ from typing import Callable
 
 from dinoponera.agent.io import ConsoleInteractor
 from dinoponera.agent.planning import plan_calculation
+from dinoponera.config import ConfigurationError, require_anthropic_api_key
 from dinoponera.core.models import CalculationGraph
 from dinoponera.core.render import render_graph
 from dinoponera.core.script_generation import write_run_script
@@ -46,6 +47,12 @@ def _nodes_requiring_implementation(graph: CalculationGraph) -> list[str]:
 
 
 def main(input_fn: Callable[[str], str] = input) -> int:
+    try:
+        require_anthropic_api_key()
+    except ConfigurationError as exc:
+        print(exc)
+        return 1
+
     problem = input_fn("What do you want to calculate?\n> ").strip()
     if not problem:
         print("No calculation problem provided.")

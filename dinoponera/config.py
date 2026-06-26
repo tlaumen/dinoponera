@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
+
+
+class ConfigurationError(RuntimeError):
+    """Raised when required runtime configuration is missing."""
 
 
 def load_environment(dotenv_path: str | Path | None = None, *, override: bool = False) -> bool:
@@ -19,3 +24,16 @@ def load_environment(dotenv_path: str | Path | None = None, *, override: bool = 
     if not path:
         return False
     return load_dotenv(path, override=override)
+
+
+def require_anthropic_api_key() -> None:
+    """Ensure live BAML calls have Anthropic credentials available."""
+
+    load_environment()
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return
+    raise ConfigurationError(
+        "ANTHROPIC_API_KEY is not set. Set it in your environment or create a "
+        "repo-local .env file containing ANTHROPIC_API_KEY=... before running "
+        "live BAML planning commands."
+    )

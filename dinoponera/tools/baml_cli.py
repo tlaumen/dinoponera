@@ -6,11 +6,16 @@ import os
 import subprocess
 import sys
 
-from dinoponera.config import load_environment
+from dinoponera.config import ConfigurationError, require_anthropic_api_key
 
 
 def main(argv: list[str] | None = None) -> int:
-    load_environment()
+    try:
+        require_anthropic_api_key()
+    except ConfigurationError as exc:
+        print(exc)
+        return 1
+
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         args = ["--help"]

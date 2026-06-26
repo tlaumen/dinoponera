@@ -7,6 +7,7 @@ from dinoponera.core.models import CalculationGraph, NodeSummary
 
 
 def test_calculate_script_prompts_plans_generates_and_does_not_run(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(calculate, "require_anthropic_api_key", lambda: None)
     graph = CalculationGraph(
         name="example",
         terminal_node_id="terminal",
@@ -36,6 +37,7 @@ def test_calculate_script_prompts_plans_generates_and_does_not_run(monkeypatch, 
 
 
 def test_calculate_script_can_run_generated_script(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(calculate, "require_anthropic_api_key", lambda: None)
     graph = CalculationGraph(
         name="example",
         terminal_node_id="terminal",
@@ -66,6 +68,7 @@ def test_calculate_script_can_run_generated_script(monkeypatch, tmp_path) -> Non
 
 
 def test_calculate_script_warns_and_does_not_run_unimplemented_stubs(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(calculate, "require_anthropic_api_key", lambda: None)
     graph = CalculationGraph(
         name="with_stub",
         terminal_node_id="reader_base_value",
@@ -107,5 +110,20 @@ def test_calculate_script_warns_and_does_not_run_unimplemented_stubs(monkeypatch
     assert run_called is False
 
 
-def test_calculate_script_rejects_empty_problem() -> None:
+def test_calculate_script_rejects_empty_problem(monkeypatch) -> None:
+    monkeypatch.setattr(calculate, "require_anthropic_api_key", lambda: None)
+
     assert calculate.main(input_fn=lambda prompt: "   ") == 1
+
+
+def test_calculate_script_reports_missing_anthropic_api_key(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        calculate,
+        "require_anthropic_api_key",
+        lambda: (_ for _ in ()).throw(
+            calculate.ConfigurationError("ANTHROPIC_API_KEY is not set. Create .env.")
+        ),
+    )
+
+    assert calculate.main(input_fn=lambda prompt: "should not be read") == 1
+    assert "ANTHROPIC_API_KEY is not set" in capsys.readouterr().out
