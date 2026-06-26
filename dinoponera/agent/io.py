@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from textwrap import fill
 from typing import Protocol
 
 from dinoponera.core.models import (
@@ -34,13 +35,26 @@ class UserInteractor(Protocol):
     def approve_graph(self, graph: CalculationGraph, rendered: str) -> bool: ...
 
 
+def _wrapped_block(text: str) -> str:
+    normalized = " ".join(text.split())
+    return fill(normalized, width=80, initial_indent="    ", subsequent_indent="    ")
+
+
 class ConsoleInteractor:
     """Simple terminal implementation of UserInteractor."""
 
     def ask_clarification(self, question: str, context: str | None = None) -> str:
+        print("The request you made needs clarification to classify what calculation you want to make.")
         if context:
-            print(context)
-        return input(f"{question}\n> ").strip()
+            print("The clarification is required because:")
+            print()
+            print(_wrapped_block(context))
+        print()
+        print("Please clarify the following:")
+        print()
+        print(_wrapped_block(question))
+        print()
+        return input("> ").strip()
 
     def confirm_goal(self, calculation_type: str, terminal_node_id: str) -> bool:
         print(f"Calculation type: {calculation_type}")

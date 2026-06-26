@@ -87,9 +87,12 @@ def test_render_graph_includes_nodes_outputs_and_connections() -> None:
     rendered = render_graph(example_graph(), summaries())
 
     assert "Calculation graph: example_doubling" in rendered
-    assert "- format_result [computation] -> calc_types.example.CalculationResult" in rendered
-    assert "- example_source_value [data_retrieval] -> calc_types.example.BaseValue" in rendered
-    assert "example_source_value -> double_value.base (calc_types.example.BaseValue)" in rendered
+    assert "A: format_result [computation]" in rendered
+    assert "      output: CalculationResult" in rendered
+    assert "C: example_source_value [data_retrieval]" in rendered
+    assert "      output: BaseValue" in rendered
+    assert "B -> A (doubled)" in rendered
+    assert "C -> B (base)" in rendered
 
 
 def test_unique_match_graph_building_closes_loop_from_terminal_node(tmp_path: Path) -> None:
