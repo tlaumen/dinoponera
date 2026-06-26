@@ -16,7 +16,9 @@ from registry import index as registry_index
 
 
 def load_example_graph() -> CalculationGraph:
-    return CalculationGraph.model_validate_json(Path("graphs/example_doubling.json").read_text())
+    return CalculationGraph.model_validate_json(
+        Path("tests/fixtures/graphs/example_doubling.json").read_text()
+    )
 
 
 def test_models_round_trip_and_named_edges() -> None:

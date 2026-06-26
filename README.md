@@ -82,12 +82,7 @@ uv run python -m dinoponera.core.script_generation graphs/auto_example_doubling.
 uv run python runs/run_auto_example_doubling.py
 ```
 
-You can also regenerate and run the checked-in manual graph:
-
-```bash
-uv run python -m dinoponera.core.script_generation graphs/example_doubling.json
-uv run python runs/run_example_doubling.py
-```
+The `graphs/` and `runs/` directories are created locally as needed and are ignored by Git.
 
 ## Live BAML planning helpers
 
@@ -131,9 +126,11 @@ calc_types/      Pydantic domain models
 registry/        decorated Python calculation nodes and explicit node index
 baml_src/        BAML schemas, prompts, and BAML-native tests
 baml_client/     generated BAML Python client, committed for runtime imports
+tests/           deterministic Python tests
+
+Generated locally and ignored by Git:
 graphs/          approved graph JSON files
 runs/            generated standalone execution scripts
-tests/           deterministic Python tests
 ```
 
 ## Adding domain types

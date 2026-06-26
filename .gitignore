@@ -15,3 +15,7 @@ wheels/
 .venv
 env/
 venv/
+
+# Generated local calculation artifacts
+/graphs/
+/runs/
