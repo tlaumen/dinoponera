@@ -1,0 +1,23 @@
+{
+  "name": "settlement",
+  "terminal_node_id": "calculate_settlement",
+  "nodes": [
+    "calculate_settlement",
+    "prompt_soil_profile",
+    "prompt_settlement_parameters"
+  ],
+  "edges": [
+    {
+      "from_node": "prompt_soil_profile",
+      "to_node": "calculate_settlement",
+      "to_input": "soil_profile",
+      "type": "calc_types.soil.SoilProfile"
+    },
+    {
+      "from_node": "prompt_settlement_parameters",
+      "to_node": "calculate_settlement",
+      "to_input": "parameters",
+      "type": "calc_types.settlement.SettlementParameters"
+    }
+  ]
+}

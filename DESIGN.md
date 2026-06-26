@@ -1,1119 +1,865 @@
-# Design: Calculation Agent MVP
+# Design: Geotechnical Registry Nodes for Settlement and Piled-Foundation Manual Tests
 
 ## Summary
 
-Implement the MVP from `calc_agent_design.md`: Step 1 Planning plus Step 2 Execution Script Generation.
+Add geotechnical calculation domain types and registry nodes so a user can manually compose two calculation cases with the existing Dinoponera framework:
 
-The system will let an engineer describe a calculation problem, use BAML-assisted planning to identify the terminal calculation node and build a typed dependency graph from a hand-authored Python registry, lint and approve that graph, serialize it to `graphs/{name}.json`, then generate a standalone auditable Python execution script under `runs/run_{name}.py`.
+1. a general soil-compressibility settlement calculation, with both manual-entry and CPT-derived source paths available;
+2. a CPT-required piled-foundation capacity calculation.
 
-Post-MVP node/type/code authoring is intentionally deferred.
+This change only populates `calc_types/`, `registry/nodes/`, and `registry/index.py` with usable node definitions and supporting tests. It does not add checked-in graph JSON files or generated run scripts. After implementation, a user/tester will manually create and approve calculation paths through the existing framework.
 
 ## Goals
 
-- Implement Step 1 Planning from `calc_agent_design.md`:
-  - goal identification loop
-  - explicit goal confirmation
-  - graph-building loop
-  - dependency traversal and linting
-  - graph review and approval
-  - approved graph serialization
-- Implement Step 2 Execution Script Generation from `calc_agent_design.md`:
-  - load approved graph JSON
-  - topologically sort forward graph edges
-  - generate human-readable standalone Python script
-  - avoid all LLM/BAML calls during script generation and generated-script execution
-- Use a Python-native registry:
-  - node functions decorated with `@node(...)`
-  - `registry/index.py` owning `NODES`
-  - node summaries built by inspecting signatures and decorator metadata
-- Use Pydantic models for shared serialized data.
-- Use root-level calculation asset directories matching `calc_agent_design.md`:
-  - `calc_types/`
-  - `registry/`
-  - `graphs/`
-  - `runs/`
-- Add Python tests for deterministic behavior and mocked planner orchestration.
-- Add BAML-native tests directly in `.baml` files for every MVP BAML function.
+- Add geotechnical Pydantic domain models using codebase-native `calc_types/` modules.
+- Add settlement registry nodes:
+  - manual prompt source for `SoilProfile`;
+  - manual prompt source for `SettlementParameters`;
+  - deterministic hypothetical CPT source;
+  - CPT-to-soil-profile interpreter;
+  - CPT-to-settlement-parameters derivation;
+  - terminal settlement calculation.
+- Add piled-foundation registry nodes:
+  - deterministic hypothetical CPT source reused from settlement;
+  - manual pile geometry source;
+  - CPT-to-pile-foundation-parameters derivation;
+  - terminal pile foundation capacity calculation that consumes geometry, derived parameters, and original CPT data.
+- Keep calculations simplified, deterministic where possible, and explicitly labeled as illustrative/manual-test logic.
+- Register all new nodes in `registry/index.py`.
+- Add focused Python tests for node execution, prompt-node behavior with patched input, formulas, and registry summaries.
 
 ## Non-Goals
 
-- Do not implement Post-MVP node authoring.
-- Do not generate new domain types through BAML.
-- Do not generate node implementation code through BAML.
-- Do not implement registry scaling, embedding search, conditional execution, iterative calculations, or report generation.
-- Do not implement a separate in-process graph executor in the MVP.
-- Do not use `old/DESIGN.md` where it conflicts with `calc_agent_design.md`.
+- Do not add checked-in `graphs/*.json` files.
+- Do not add checked-in generated `runs/run_*.py` files.
+- Do not implement a runtime conditional/branching graph engine.
+- Do not implement production-grade geotechnical design standards.
+- Do not implement real CPT file parsing.
+- Do not add new dependencies or a units library.
+- Do not change BAML schemas/prompts unless later requested separately.
+- Do not create a manual-only piled-foundation soil/resistance path; pile soil/resistance parameters must derive from CPT data.
 
 ## Existing Codebase Context
 
 Repository evidence at design time:
 
-- `calc_agent_design.md` exists and is the requested source design.
-- `call_flow.md` exists and restates the planning/execution call flow.
-- `old/DESIGN.md` exists but describes a different plan that conflicts with `calc_agent_design.md` in material areas, especially registry storage and graph representation.
-- `pyproject.toml` exists with:
-  - project name `dinoponera`
-  - Python requirement `>=3.12`
-  - no dependencies
-- `.python-version` is `3.12`.
-- `dinoponera/` exists but is empty.
-- `tests/` exists but is empty.
-- `README.md` exists but is empty.
-- No BAML files, generated BAML client, registry, calc types, graph models, execution generator, logging/config conventions, or test tooling are currently present.
+- `calc_types/example.py` contains simple Pydantic domain models used by the walking-skeleton calculation.
+- `registry/nodes/example_source_value.py`, `registry/nodes/double_value.py`, and `registry/nodes/format_result.py` demonstrate the current decorated-node pattern.
+- `registry/decorators.py` provides `@node(...)` metadata with `node_type`, `description`, `when_to_use`, `assumptions`, and `references`.
+- `registry/index.py` explicitly imports registered node functions and lists them in `NODES`.
+- `dinoponera/core/registry_introspection.py` requires registry node inputs and outputs to be importable Pydantic `BaseModel` subclasses. Primitive node I/O annotations are rejected.
+- `dinoponera/core/models.py` defines `CalculationGraph`, `NodeSummary`, `NodeInput`, and `Edge`; graph connections are exact typed edges to named downstream inputs.
+- `dinoponera/core/lint.py` requires every non-leaf computation input to have exactly one incoming edge and treats `data_retrieval` and `user_input` as leaf node types.
+- `dinoponera/core/script_generation.py` generates deterministic scripts from static approved DAGs.
+- `dinoponera/agent/deterministic_planning.py` can start from a terminal node ID and guide manual graph composition when multiple producers are available.
+- Existing validation command documented in `README.md` is:
 
-Because the implementation starts from an empty package, this design introduces new modules rather than migrating existing application code.
+```bash
+uv run --extra dev pytest -q
+```
 
 ## Relevant Files and Modules
 
-Existing files:
+Existing files to update:
 
-- `calc_agent_design.md` — existing; source architecture for this implementation.
-- `call_flow.md` — existing; supporting flow reference.
-- `pyproject.toml` — existing; update during implementation for dependencies/tooling.
-- `dinoponera/` — existing empty package directory; add framework modules here.
-- `tests/` — existing empty test directory; add pytest tests here.
+- `registry/index.py` — add imports for new node modules and append functions to `NODES`.
 
-New source/runtime layout:
+New type files:
 
-```text
-dinoponera/
-  core/
-    __init__.py
-    models.py
-    naming.py
-    registry_introspection.py
-    traversal.py
-    lint.py
-    leaf_stub_generation.py
-    render.py
-    script_generation.py
-  agent/
-    __init__.py
-    io.py
-    planning.py
+- `calc_types/soil.py`
+- `calc_types/cpt.py`
+- `calc_types/settlement.py`
+- `calc_types/piled_foundation.py`
 
-calc_types/
-  __init__.py
+New node files:
 
-registry/
-  __init__.py
-  decorators.py
-  index.py
-  nodes/
-    __init__.py
+- `registry/nodes/prompt_soil_profile.py`
+- `registry/nodes/prompt_settlement_parameters.py`
+- `registry/nodes/hypothetical_cpt_data.py`
+- `registry/nodes/interpret_cpt_soil_profile.py`
+- `registry/nodes/derive_settlement_parameters_from_cpt.py`
+- `registry/nodes/calculate_settlement.py`
+- `registry/nodes/manual_pile_geometry.py`
+- `registry/nodes/derive_pile_foundation_parameters_from_cpt.py`
+- `registry/nodes/calculate_pile_foundation_capacity.py`
 
-graphs/
-  # approved CalculationGraph JSON files
+New test file:
 
-runs/
-  # generated run scripts
+- `tests/core/test_geotechnical_nodes.py`
 
-tests/
-  core/
-  agent/
+Existing framework entrypoints for manual testing after implementation:
 
-# BAML files/config:
-# exact paths are determined by the BAML tooling introduced by implementation.
-```
+- `calculate.py`
+- `dinoponera/agent/deterministic_planning.py`
+- `dinoponera/core/script_generation.py`
 
 ## Accepted Design Decisions
 
-1. **Scope** — implement Step 1 Planning and Step 2 Execution Script Generation; defer Post-MVP node authoring.
-2. **Layout** — framework code lives under `dinoponera/`; calculation assets/artifacts live at repo root in `calc_types/`, `registry/`, `graphs/`, and `runs/`.
-3. **Registry** — use Python-function registry with `@node` metadata and signature introspection, with `registry/index.py` as source of truth.
-4. **Models** — use Pydantic models with named node inputs and explicit `Edge` records storing producer, consumer, downstream input parameter name, and full import-path type string.
-5. **BAML boundary** — localize direct calls to BAML-generated functions in `dinoponera/agent/planning.py`; BAML function input/output object structures are declared in `.baml` files, not duplicated as Python Pydantic result models; core modules remain BAML-free.
-6. **User interaction** — use a `UserInteractor` protocol plus `ConsoleInteractor`; core modules must not call `input()` or `print()` for workflow decisions.
-7. **Execution artifact** — generate standalone Python scripts only; do not add a separate in-process executor in the MVP.
-8. **Testing** — use pytest for Python tests and required BAML-native tests inside `.baml` files for each MVP BAML function.
+1. **Registry nodes only, no committed graphs/runs** — Add nodes and types only. The user/tester will manually compose calculation graphs with the existing framework. Do not commit `graphs/*.json` or `runs/run_*.py` artifacts for these cases.
+2. **Split domain type modules by area** — Use `calc_types/soil.py`, `calc_types/cpt.py`, `calc_types/settlement.py`, and `calc_types/piled_foundation.py`.
+3. **Settlement workflow** — Terminal settlement node consumes separate `SoilProfile` and `SettlementParameters`. Both manual and CPT-derived producer paths are available in the registry.
+4. **Piled-foundation workflow** — Piled foundation requires CPT data. The terminal node consumes `PileGeometry`, CPT-derived `PileFoundationParameters`, and the original `CptData`.
+5. **Hypothetical CPT source** — Model the hypothetical CPT file as a deterministic `data_retrieval` node returning `CptData`; do not parse an external file.
+6. **Manual settlement source nodes** — Use interactive `user_input` prompt nodes for manual settlement soil profile and parameters.
+7. **Simplified formulas** — Use illustrative manual-test formulas, not production engineering standards. Settlement is general layered soil compressibility, not pile settlement.
+8. **Unit-suffixed fields** — Use simple float fields with units encoded in field names, such as `surface_load_kpa`, `thickness_m`, `diameter_m`, `total_settlement_mm`, and `design_capacity_kn`.
+9. **Validation scope** — Add registry/node unit tests only. Do not add committed graph or run artifacts. The user/tester manually composes graphs after implementation.
 
 ## Proposed Architecture
 
-High-level MVP flow:
+### Settlement registry paths
 
 ```text
-User natural-language problem
-  -> Phase 1 goal identification loop       # BAML + UserInteractor
-  -> explicit goal confirmation             # UserInteractor
-  -> Phase 2 graph building loop            # BAML + Python traversal
-  -> dependency lint                         # Python
-  -> graph review and approval              # UserInteractor
-  -> graphs/{graph.name}.json               # Pydantic JSON
-  -> script generation                       # Python, no BAML
-  -> runs/run_{graph.name}.py               # standalone execution script
+Manual settlement path:
+prompt_soil_profile() -> SoilProfile
+prompt_settlement_parameters() -> SettlementParameters
+calculate_settlement(
+  soil_profile: SoilProfile,
+  parameters: SettlementParameters,
+) -> SettlementResult
 ```
-
-Core responsibility split:
 
 ```text
-BAML:
-  - baml_identify_goal
-  - baml_extend_graph
-  - declare BAML-native input/output object structures in `.baml` files
-  - ask focused clarification/application questions through structured outputs
-  - rewrite StateSummary
-
-Python core:
-  - Pydantic model definitions for Python-owned graph/registry/user-decision data only
-  - registry function introspection
-  - full import-path type extraction
-  - breadth-first unresolved-input traversal
-  - graph linting and cycle detection
-  - graph rendering for review
-  - graph serialization/deserialization
-  - topological sorting
-  - standalone script generation
+CPT settlement path:
+hypothetical_cpt_data() -> CptData
+interpret_cpt_soil_profile(cpt: CptData) -> SoilProfile
+derive_settlement_parameters_from_cpt(cpt: CptData) -> SettlementParameters
+calculate_settlement(
+  soil_profile: SoilProfile,
+  parameters: SettlementParameters,
+) -> SettlementResult
 ```
+
+### Piled-foundation registry path
+
+```text
+hypothetical_cpt_data() -> CptData
+manual_pile_geometry() -> PileGeometry
+derive_pile_foundation_parameters_from_cpt(cpt: CptData) -> PileFoundationParameters
+calculate_pile_foundation_capacity(
+  geometry: PileGeometry,
+  parameters: PileFoundationParameters,
+  cpt: CptData,
+) -> PileFoundationResult
+```
+
+There is no manual-only producer for `PileFoundationParameters`.
 
 ## Data Flow
 
-### Registry loading
+### Settlement manual path
 
-1. Domain nodes are hand-authored in `registry/nodes/*.py`.
-2. Each node is decorated with `@node(...)` from `registry/decorators.py`.
-3. `registry/index.py` imports node functions and lists them in `NODES`.
-4. `registry.index.summaries()` builds `NodeSummary` values by introspecting function signatures and decorator metadata.
-5. Input parameters are stored as structured records containing both the Python parameter name and the full import-path type string. Output types are stored as full import-path strings:
-   - `NodeInput(name="profile_a", type="calc_types.soil_profile.SoilProfile")`
-   - output example: `calc_types.settlement_result.SettlementResult`
+1. User starts manual planning from terminal node `calculate_settlement`.
+2. The graph builder sees unresolved inputs:
+   - `soil_profile: calc_types.soil.SoilProfile`
+   - `parameters: calc_types.settlement.SettlementParameters`
+3. User selects manual prompt producers:
+   - `prompt_soil_profile`
+   - `prompt_settlement_parameters`
+4. Generated script execution calls those prompt nodes, asks for runtime values, then calls `calculate_settlement`.
 
-### Phase 1 — Goal identification
+### Settlement CPT path
 
-1. User provides `problem: str`.
-2. Python gathers `registry_summaries = registry.index.summaries()`.
-3. `dinoponera/agent/planning.py` calls `baml_identify_goal(problem, registry_summaries, clarifications)`.
-4. If BAML returns `NeedsClarification`, the planner asks via `UserInteractor.ask_clarification()` and appends `QA`.
-5. If BAML returns `GoalClear` with `terminal_node_id is None`, raise/report `MissingNodeError` instructing the engineer to add the missing node manually and restart.
-6. If BAML returns `GoalClear` with a terminal node, show it through `UserInteractor.confirm_goal()`.
-7. Proceed to Phase 2 only after explicit confirmation.
+1. User starts manual planning from terminal node `calculate_settlement`.
+2. The graph builder sees the same unresolved inputs as the manual path.
+3. User selects CPT-derived producers:
+   - `interpret_cpt_soil_profile` for `SoilProfile`
+   - `derive_settlement_parameters_from_cpt` for `SettlementParameters`
+4. Both interpreter/derivation nodes require `CptData`.
+5. User selects `hypothetical_cpt_data` as the producer of `CptData`.
+6. Generated script execution uses deterministic CPT data, derives the settlement inputs, then calls `calculate_settlement`.
 
-### Phase 2 — Graph building
+### Piled-foundation CPT path
 
-1. Initialize:
-
-```text
-graph = CalculationGraph(
-  name=normalise_name(goal.calculation_type),
-  terminal_node_id=goal.terminal_node_id,
-  nodes=[goal.terminal_node_id],
-  edges=[]
-)
-state_summary = goal.state_summary
-clarifications = []
-```
-
-2. `BreadthFirstTraversal.next_unresolved(graph, registry_summaries)` finds the first non-leaf node input parameter whose `(to_node, to_input, type)` is not satisfied by an incoming edge.
-3. Python prefilters registry summaries to nodes whose `output == unresolved.input_type`.
-4. `planning.py` calls `baml_extend_graph(unresolved, state_summary, graph, filtered_summaries, clarifications)`.
-5. Handle BAML outputs:
-   - `ConnectExisting`: append `Edge(from_node=from_node_id, to_node=unresolved.node_id, to_input=unresolved.input_name, type=unresolved.input_type)`.
-   - `AddFromRegistry`: append node ID if not already present, then append `Edge(from_node=node_id, to_node=unresolved.node_id, to_input=unresolved.input_name, type=unresolved.input_type)`.
-   - `ApplicabilityCheck`: ask user to choose a candidate, reject all, or clarify.
-   - `NoCandidate`: do not immediately fail. Invoke the same source-gap resolution path used after lint. `planning.py` asks whether this required type should be provided as a leaf source through local data retrieval or runtime/user input. If the user chooses a leaf source, generate the corresponding stub immediately and add an edge for the unresolved named input. If the user says this requires a missing computation node instead, raise/report `MissingNodeError` asking the engineer to add a suitable computation node manually and restart.
-6. Repeat until traversal returns `None`; no unresolved or deferred source gaps may remain before graph approval.
-
-### Dependency lint and approval
-
-1. Run cycle detection.
-2. Verify every non-leaf node input parameter has exactly one incoming edge matching both the required parameter name and required type.
-3. Keep lint itself pure: it reports graph issues only. The interactive lint-resolution loop lives in `dinoponera/agent/planning.py`.
-4. Remaining or deferred source gaps are resolved through an interactive source-gap decision in `planning.py`. The user may choose one of the Step 1 leaf stub options from `calc_agent_design.md`:
-   - data retrieval stub
-   - user input stub
-   or indicate that the gap is not a source value and requires a missing computation node.
-5. If a leaf option is chosen, `planning.py` calls deterministic leaf stub generation, appends the new leaf node and `Edge(from_node=new_node_id, to_node=gap.node_id, to_input=gap.input_name, type=gap.input_type)`, refreshes registry summaries, and reruns lint. If the user indicates a missing computation node, planning raises/reports `MissingNodeError` and asks the engineer to add that computation node manually and restart.
-6. Render graph for user review.
-7. If approved, write `graphs/{graph.name}.json` using `CalculationGraph.model_dump_json()`.
-8. If reset, discard planning state and restart Phase 1.
-
-### Step 2 — Script generation
-
-1. Load `graphs/{name}.json` using `CalculationGraph.model_validate_json()`.
-2. Topologically sort graph edges, which are already stored producer → consumer.
-3. Generate imports for:
-   - type annotations from registry summaries
-   - node functions from `registry.nodes.<node_id>`
-4. Generate variable names from output type names in snake_case.
-5. Resolve downstream arguments in `NodeSummary.inputs` order by following graph edges for each required input parameter name and type.
-6. Generate `run() -> TerminalOutputType` and a `__main__` block that prints the result.
-7. Write to `runs/run_{graph.name}.py`.
+1. User starts manual planning from terminal node `calculate_pile_foundation_capacity`.
+2. The graph builder sees unresolved inputs:
+   - `geometry: calc_types.piled_foundation.PileGeometry`
+   - `parameters: calc_types.piled_foundation.PileFoundationParameters`
+   - `cpt: calc_types.cpt.CptData`
+3. User selects:
+   - `manual_pile_geometry` for pile geometry;
+   - `derive_pile_foundation_parameters_from_cpt` for parameters;
+   - `hypothetical_cpt_data` for original CPT data.
+4. The parameter derivation node also consumes `CptData`, so `hypothetical_cpt_data` can connect to both the parameter derivation node and the terminal pile calculation.
+5. Generated script execution derives parameters from CPT, passes geometry, parameters, and original CPT data to `calculate_pile_foundation_capacity`.
 
 ## API / Interface Changes
 
-### Pydantic models
+### `calc_types/soil.py`
 
-Define Python-owned graph, registry, and user-decision models in `dinoponera/core/models.py`. Do not duplicate BAML function input/output object structures as Python Pydantic result models; BAML function schemas are declared in `.baml` files and consumed through the generated BAML client.
+Define:
 
 ```text
-NodeInput(BaseModel)
-  name: str                         # Python function parameter name
-  type: str                         # full import-path type string
-
-NodeSummary(BaseModel)
-  id: str
-  node_type: str                    # computation | data_retrieval | user_input
-  description: str
-  when_to_use: str
-  assumptions: list[str]
-  inputs: list[NodeInput]           # preserves parameter names and supports duplicate input types
-  output: str                       # full import-path type string
-  references: list[str]
-
-UnresolvedInput(BaseModel)
-  node_id: str
-  input_name: str                   # downstream parameter name
-  input_type: str                   # full import-path type string
-
-Edge(BaseModel)
-  from_node: str
-  to_node: str
-  to_input: str                     # downstream parameter name satisfied by this edge
-  type: str                         # full import-path type string
-
-CalculationGraph(BaseModel)
+SoilLayer(BaseModel)
   name: str
-  terminal_node_id: str
-  nodes: list[str]
-  edges: list[Edge]
-  has_edge(to: str, to_input: str, type: str) -> bool
+  top_m: float
+  bottom_m: float
+  compressibility_per_kpa: float
 
-QA(BaseModel)
-  question: str
-  answer: str
-
-StateSummary(BaseModel)
-  goal: str
-  decisions: list[str]
-  open_items: list[str]
-  phase1_clarification_summary: str
-
-ApplicabilityResponse(BaseModel)
-  kind: Literal["chosen", "rejected_all", "unsure"]
-  node_id: str | None               # populated when kind == chosen
-  detail: str | None                # clarification detail when kind == unsure
-
-SourceGapResponse(BaseModel)
-  kind: Literal["data_retrieval", "user_input", "missing_computation"]
-  detail: str | None                # optional rationale or missing computation description
+SoilProfile(BaseModel)
+  layers: list[SoilLayer]
 ```
 
-Named inputs are required. A node may have multiple parameters with the same type, and each one remains distinguishable by `NodeInput.name`, `UnresolvedInput.input_name`, and `Edge.to_input`.
+Conservative implementation notes:
 
-BAML outputs such as goal-clear, needs-clarification, connect-existing, add-from-registry, applicability-check, and no-candidate are generated from BAML-native declarations. Python planning code should use the generated BAML client objects directly at the orchestration boundary and map only Python-owned user decisions or graph mutations into the Pydantic models above.
+- `bottom_m` should be greater than `top_m` for sensible sample/prompt data.
+- The settlement calculation should compute layer thickness as `bottom_m - top_m` rather than requiring a separate thickness field.
+- Add Pydantic validators only if implementation wants clear input errors; no new dependencies are required.
 
-### Registry interface
+### `calc_types/cpt.py`
 
-Define Python registry behavior in `registry/index.py`, supported by helpers in `dinoponera/core/registry_introspection.py`:
+Define:
 
 ```text
-NODES: list[callable]
-summaries() -> list[NodeSummary]
-get(node_id: str) -> callable
-get_summary(node_id: str) -> NodeSummary
-exists(node_id: str) -> bool
+CptPoint(BaseModel)
+  depth_m: float
+  cone_resistance_mpa: float
+  sleeve_friction_kpa: float
+
+CptData(BaseModel)
+  source_name: str
+  points: list[CptPoint]
 ```
 
-Rules:
+`source_name` should identify the hypothetical source, for example `"hypothetical_cpt_file.csv"`.
 
-- `NODES` is the source of truth.
-- `node_id` is `fn.__name__`.
-- All node functions must have `@node(...)` metadata.
-- All parameters and return values must be annotated with importable Pydantic `BaseModel` domain types for calculation I/O.
-- Raw primitive calculation I/O should fail validation or at least be rejected by registry summary construction unless explicitly needed for internal non-domain use.
-- Duplicate node IDs must fail clearly.
-- Missing annotations, missing return annotations, or missing metadata must fail clearly.
+### `calc_types/settlement.py`
 
-### User interaction interface
-
-Define in `dinoponera/agent/io.py`. The interface should avoid requiring Python-defined BAML result classes. It should accept primitive presentation fields and Python-owned models such as `NodeSummary`, `UnresolvedInput`, `StateSummary`, `CalculationGraph`, `ApplicabilityResponse`, and `SourceGapResponse`.
+Define:
 
 ```text
-class UserInteractor(Protocol):
-  ask_clarification(question: str, context: str | None = None) -> str
-  confirm_goal(calculation_type: str, terminal_node_id: str) -> bool
-  resolve_applicability(question: str, candidates: list[NodeSummary]) -> ApplicabilityResponse
-  resolve_source_gap(gap: UnresolvedInput, state_summary: StateSummary) -> SourceGapResponse
-  approve_graph(graph: CalculationGraph, rendered: str) -> bool
+SettlementParameters(BaseModel)
+  surface_load_kpa: float
+
+SettlementLayerContribution(BaseModel)
+  layer_name: str
+  thickness_m: float
+  compressibility_per_kpa: float
+  settlement_mm: float
+
+SettlementResult(BaseModel)
+  total_settlement_mm: float
+  contributions: list[SettlementLayerContribution]
+  notes: list[str]
 ```
 
-`ApplicabilityResponse` must distinguish these cases explicitly:
+The accepted settlement formula is illustrative layered compressibility:
 
 ```text
-chosen       -> node_id contains the selected candidate
-rejected_all -> planning raises MissingNodeError for MVP
-unsure       -> detail contains the user's clarification answer to append as QA
+layer_settlement_mm = surface_load_kpa * compressibility_per_kpa * thickness_m
+
+total_settlement_mm = sum(layer_settlement_mm for each layer)
 ```
 
-`SourceGapResponse` must distinguish these cases explicitly:
+The field `compressibility_per_kpa` is intended to be chosen so the formula directly produces millimetres for the manual-test examples. Result notes must state that the formula is illustrative and not production-grade.
+
+### `calc_types/piled_foundation.py`
+
+Define:
 
 ```text
-data_retrieval      -> create a reader_* leaf stub
-user_input          -> create a prompt_* leaf stub
-missing_computation -> raise MissingNodeError asking for a computation node to be added manually
+PileGeometry(BaseModel)
+  diameter_m: float
+  embedded_length_m: float
+
+PileFoundationParameters(BaseModel)
+  unit_shaft_resistance_kpa: float
+  unit_base_resistance_kpa: float
+  resistance_factor: float
+
+PileFoundationResult(BaseModel)
+  shaft_capacity_kn: float
+  base_capacity_kn: float
+  ultimate_capacity_kn: float
+  design_capacity_kn: float
+  notes: list[str]
 ```
 
-Add `ConsoleInteractor` as the first concrete implementation. Only `ConsoleInteractor` should use terminal input/output for workflow decisions.
-
-### BAML functions
-
-MVP BAML functions:
+Piled-foundation capacity formula:
 
 ```text
-baml_identify_goal(problem, registry, clarifications)
-baml_extend_graph(current_unresolved, state_summary, graph, registry, clarifications)
+perimeter_m = pi * diameter_m
+base_area_m2 = pi * diameter_m**2 / 4
+shaft_capacity_kn = unit_shaft_resistance_kpa * perimeter_m * embedded_length_m
+base_capacity_kn = unit_base_resistance_kpa * base_area_m2
+ultimate_capacity_kn = shaft_capacity_kn + base_capacity_kn
+design_capacity_kn = ultimate_capacity_kn / resistance_factor
 ```
 
-The input and output object structures for these functions must be declared in BAML, inside the `.baml` files. Do not mirror these BAML function result objects as Python Pydantic models in `dinoponera/core/models.py`. This keeps BAML callflows visible in the BAML source and keeps BAML-native tests close to the schemas and prompts they validate.
-
-Python still owns the runtime graph/registry models needed for introspection, serialization, linting, and script generation. When those values are passed into BAML functions, the `.baml` files must declare the corresponding BAML-side input structures. `planning.py` should perform any narrow conversion required by the generated BAML client rather than defining parallel Python BAML schemas.
-
-Exact BAML type shapes are intentionally left to implementation because the repository currently has no BAML project. The implementation agent must define BAML-native structures that can represent the callflow in `calc_agent_design.md`, including at least:
-
-```text
-baml_identify_goal output variants:
-  GoalClear-like result
-  NeedsClarification-like result
-
-baml_extend_graph output variants:
-  ConnectExisting-like result
-  AddFromRegistry-like result
-  ApplicabilityCheck-like result
-  NoCandidate-like result
-```
-
-Those BAML structures must include enough fields for `planning.py` to perform the graph mutations described in this design, including downstream `input_name`/`to_input` where relevant through `UnresolvedInput`.
-
-Exact generated client imports, BAML file paths, provider configuration, and validation commands are unknown from the current repository. The implementation agent must introduce BAML according to the tooling it chooses and keep direct imports localized to `dinoponera/agent/planning.py`.
-
-Every BAML function introduced for the MVP must include at least two BAML-native tests directly in the `.baml` file(s). These are development tests, not skipped Python tests.
+Because `1 kPa * m² = 1 kN`, no extra conversion is required for these simplified formulas.
 
 ## Code Architecture Sketch
 
 ```text
 Before:
-dinoponera/                  # empty
-tests/                       # empty
-pyproject.toml               # no dependencies
+calc_types/
+  example.py
+registry/nodes/
+  example_source_value.py
+  double_value.py
+  format_result.py
+registry/index.py
 
 After:
-dinoponera/
-  core/
-    models.py                # Pydantic contracts for Python-owned models
-    naming.py                # normalise_name and snake_case helpers
-    registry_introspection.py # NodeSummary builder from decorated functions
-    traversal.py             # DependencyTraversal and BreadthFirstTraversal
-    lint.py                  # pure cycle and unsatisfied-input checks
-    leaf_stub_generation.py  # deterministic data_retrieval/user_input stub writer
-    render.py                # graph review text renderer
-    script_generation.py     # topological sort and standalone script renderer
-  agent/
-    io.py                    # UserInteractor and ConsoleInteractor
-    planning.py              # Phase 1/2 loops; localized BAML calls
-
 calc_types/
-  __init__.py                # domain type package; initially empty or seeded examples
+  example.py
+  soil.py
+  cpt.py
+  settlement.py
+  piled_foundation.py
 
-registry/
-  decorators.py              # NodeMetadata and @node
-  index.py                   # NODES and registry functions
-  nodes/
-    __init__.py              # hand-authored nodes live here
+registry/nodes/
+  example_source_value.py
+  double_value.py
+  format_result.py
+  prompt_soil_profile.py
+  prompt_settlement_parameters.py
+  hypothetical_cpt_data.py
+  interpret_cpt_soil_profile.py
+  derive_settlement_parameters_from_cpt.py
+  calculate_settlement.py
+  manual_pile_geometry.py
+  derive_pile_foundation_parameters_from_cpt.py
+  calculate_pile_foundation_capacity.py
 
-graphs/                      # approved graph JSON
-runs/                        # generated run scripts
-```
-
-Rough interfaces:
-
-```text
-class DependencyTraversal(Protocol):
-  def next_unresolved(graph: CalculationGraph, registry: list[NodeSummary]) -> UnresolvedInput | None: ...
-
-class BreadthFirstTraversal:
-  def next_unresolved(...): ...
-
-class NodeMetadata:
-  node_type: str
-  description: str
-  when_to_use: str
-  assumptions: list[str]
-  references: list[str]
+registry/index.py
+  # existing explicit registry; add imports and append new functions to NODES
 ```
 
 ## File-by-File Implementation Plan
 
-### `pyproject.toml`
-
-- Existing.
-- Purpose: project metadata and dependencies.
-- Required changes:
-  - Add Pydantic.
-  - Add pytest test tooling.
-  - Add BAML dependency/tooling according to selected BAML setup.
-- Key dependencies:
-  - `pydantic`
-  - `pytest`
-  - BAML tooling package(s), exact names verified during implementation.
-- Tests:
-  - `pytest` should run Python tests after dependencies are installed.
-  - BAML test command must be documented once tooling is added.
-
-### `dinoponera/core/__init__.py`
+### `calc_types/soil.py`
 
 - New.
-- Purpose: mark core package.
-- Required changes: minimal exports only if useful.
-- Key types/functions/classes: Not applicable.
-- Dependencies: Not applicable.
-- Tests: Not directly required.
-
-### `dinoponera/core/models.py`
-
-- New.
-- Purpose: shared Pydantic models for Python-owned planning state, registry summaries, graph serialization, and user-decision data.
+- Purpose: shared soil profile models for settlement and CPT interpretation.
 - Required changes:
-  - Implement `NodeInput`, `NodeSummary`, `UnresolvedInput`, `Edge`, `CalculationGraph`, `QA`, `StateSummary`, `ApplicabilityResponse`, and `SourceGapResponse`.
-  - Do not implement Python Pydantic mirrors for BAML function input/output result objects; those structures belong in `.baml` files.
-  - Add `CalculationGraph.has_edge(to, to_input, type)`.
+  - Define `SoilLayer` and `SoilProfile` as Pydantic `BaseModel` classes.
 - Key types/functions/classes:
-  - `NodeInput`
-  - `NodeSummary`
-  - `UnresolvedInput`
-  - `Edge`
-  - `CalculationGraph`
-  - `StateSummary`
-  - `ApplicabilityResponse`
-  - `SourceGapResponse`
+  - `SoilLayer`
+  - `SoilProfile`
 - Dependencies:
-  - Pydantic
-  - standard-library typing
+  - `pydantic.BaseModel`
 - Tests:
-  - `tests/core/test_models.py`
+  - Construct a profile with at least two layers in `tests/core/test_geotechnical_nodes.py`.
+  - Verify node registry summaries reference `calc_types.soil.SoilProfile`.
 
-### `dinoponera/core/naming.py`
+### `calc_types/cpt.py`
 
 - New.
-- Purpose: naming helpers.
+- Purpose: deterministic hypothetical CPT data contract.
 - Required changes:
-  - Implement `normalise_name(s: str) -> str` per `calc_agent_design.md`.
-  - Implement snake_case conversion for type names and generated variable names.
+  - Define `CptPoint` and `CptData` as Pydantic `BaseModel` classes.
 - Key types/functions/classes:
-  - `normalise_name`
-  - `to_snake_case`
+  - `CptPoint`
+  - `CptData`
 - Dependencies:
-  - `re`
+  - `pydantic.BaseModel`
 - Tests:
-  - `tests/core/test_naming.py`
+  - Verify `hypothetical_cpt_data()` returns `CptData` with non-empty `points` and a `source_name` indicating a hypothetical source.
 
-### `dinoponera/core/registry_introspection.py`
+### `calc_types/settlement.py`
 
 - New.
-- Purpose: build `NodeSummary` from Python functions.
+- Purpose: settlement calculation input/result contracts.
 - Required changes:
-  - Implement `build_summary(fn) -> NodeSummary`.
-  - Validate `_node_metadata` exists.
-  - Validate annotations exist and are not raw primitives for node I/O.
-  - Convert parameter annotations to `NodeInput(name=<parameter name>, type=<full import-path string>)`.
-  - Convert return annotation to a full import-path string.
-  - Preserve duplicate input types by parameter name rather than rejecting them.
+  - Define `SettlementParameters`, `SettlementLayerContribution`, and `SettlementResult`.
 - Key types/functions/classes:
-  - `build_summary`
-  - registry validation exceptions
+  - `SettlementParameters`
+  - `SettlementLayerContribution`
+  - `SettlementResult`
 - Dependencies:
-  - `inspect`
-  - `NodeSummary`
+  - `pydantic.BaseModel`
 - Tests:
-  - `tests/core/test_registry_introspection.py`
+  - Verify `calculate_settlement()` returns deterministic total settlement and layer contributions for known inputs.
 
-### `dinoponera/core/traversal.py`
+### `calc_types/piled_foundation.py`
 
 - New.
-- Purpose: dependency traversal for unresolved graph inputs.
+- Purpose: pile geometry, CPT-derived pile parameters, and pile result contracts.
 - Required changes:
-  - Define `DependencyTraversal` protocol.
-  - Implement `BreadthFirstTraversal.next_unresolved()` following the source design, updated to check `Edge.to_input` as well as edge type.
-  - Skip `data_retrieval` and `user_input` leaf nodes.
+  - Define `PileGeometry`, `PileFoundationParameters`, and `PileFoundationResult`.
 - Key types/functions/classes:
-  - `DependencyTraversal`
-  - `BreadthFirstTraversal`
+  - `PileGeometry`
+  - `PileFoundationParameters`
+  - `PileFoundationResult`
 - Dependencies:
-  - `CalculationGraph`, `NodeSummary`, `UnresolvedInput`
+  - `pydantic.BaseModel`
 - Tests:
-  - `tests/core/test_traversal.py`
+  - Verify pile calculation outputs stable shaft, base, ultimate, and design capacities for known inputs.
 
-### `dinoponera/core/lint.py`
+### `registry/nodes/prompt_soil_profile.py`
 
 - New.
-- Purpose: dependency graph validation before approval/serialization.
+- Purpose: interactive manual-entry source for settlement soil profile.
 - Required changes:
-  - Implement cycle detection over explicit forward edges.
-  - Verify every non-leaf node input parameter has exactly one matching incoming edge by `(to_node, to_input, type)`.
-  - Provide clear errors for missing, duplicate, unknown-node, and cyclic graphs.
-  - Keep lint pure: it must not import `UserInteractor`, call `input()`, print prompts, or mutate registry files. Interactive lint resolution lives in `dinoponera/agent/planning.py`.
+  - Add a `@node(node_type="user_input", ...)` zero-argument function:
+
+```text
+prompt_soil_profile() -> SoilProfile
+```
+
+  - Prompt for enough values to construct a small `SoilProfile`.
+  - Conservative default interface: prompt for number of layers, then for each layer ask name, top depth, bottom depth, and compressibility.
+  - Convert input strings to floats where needed.
+  - Metadata assumptions must state it is interactive and intended for manual testing.
 - Key types/functions/classes:
-  - `has_cycle`
-  - `lint_graph`
-  - graph lint exception classes
+  - `prompt_soil_profile`
 - Dependencies:
-  - `CalculationGraph`, `NodeSummary`, traversal helpers
+  - `calc_types.soil.SoilLayer`
+  - `calc_types.soil.SoilProfile`
+  - `registry.decorators.node`
 - Tests:
-  - `tests/core/test_lint.py`
+  - Patch `builtins.input` with deterministic responses and assert a valid `SoilProfile` is returned.
+  - Verify registry summary node type is `user_input`.
 
-### `dinoponera/core/leaf_stub_generation.py`
+### `registry/nodes/prompt_settlement_parameters.py`
 
 - New.
-- Purpose: deterministic Step 1 generation of leaf stubs for unresolved lint gaps.
+- Purpose: interactive manual-entry source for settlement load parameters.
 - Required changes:
-  - Implement `create_leaf_stub(node_type: str, output_type_path: str) -> str`.
-  - Support only `data_retrieval` and `user_input` node types for MVP leaf gaps.
-  - Derive node IDs deterministically using the source design rule: `reader_<snake_case_type_name>` for `data_retrieval`, `prompt_<snake_case_type_name>` for `user_input`, appending `_2`, `_3`, etc. on collision.
-  - Write `registry/nodes/{node_id}.py` with the correct `@node(...)` metadata, zero parameters, and return annotation imported from `output_type_path`.
-  - Function body raises `NotImplementedError("Stub — implement before running")`.
-  - Append the import and node name to `registry/index.py` in the existing explicit-registry style.
-  - Import the new module with `importlib.import_module` and append the function to in-memory `registry.index.NODES` so traversal can continue in the same process.
-  - Return the new node ID.
+  - Add a `@node(node_type="user_input", ...)` zero-argument function:
+
+```text
+prompt_settlement_parameters() -> SettlementParameters
+```
+
+  - Prompt for `surface_load_kpa`.
+  - Metadata assumptions must state it is interactive and intended for manual testing.
 - Key types/functions/classes:
-  - `create_leaf_stub`
+  - `prompt_settlement_parameters`
 - Dependencies:
-  - `pathlib`, `importlib`, naming helpers, registry index module
+  - `calc_types.settlement.SettlementParameters`
+  - `registry.decorators.node`
 - Tests:
-  - `tests/core/test_leaf_stub_generation.py`
+  - Patch `builtins.input` and assert returned `surface_load_kpa`.
+  - Verify registry summary node type is `user_input`.
 
-### `dinoponera/core/render.py`
+### `registry/nodes/hypothetical_cpt_data.py`
 
 - New.
-- Purpose: human-readable graph review formatting.
+- Purpose: deterministic CPT source representing a hypothetical file.
 - Required changes:
-  - Render nodes with node type and output type.
-  - Render connections grouped/readably by edge.
-  - Include enough detail for approval/reset decision.
+  - Add a `@node(node_type="data_retrieval", ...)` zero-argument function:
+
+```text
+hypothetical_cpt_data() -> CptData
+```
+
+  - Return fixed sample `CptData` with multiple `CptPoint` values.
+  - Use `source_name` such as `"hypothetical_cpt_file.csv"`.
+  - Metadata assumptions must state the CPT data is hard-coded and illustrative.
 - Key types/functions/classes:
-  - `render_graph`
+  - `hypothetical_cpt_data`
 - Dependencies:
-  - `CalculationGraph`, registry summaries
+  - `calc_types.cpt.CptData`
+  - `calc_types.cpt.CptPoint`
+  - `registry.decorators.node`
 - Tests:
-  - `tests/core/test_render.py`
+  - Assert returned type, source name, and non-empty points.
 
-### `dinoponera/core/script_generation.py`
+### `registry/nodes/interpret_cpt_soil_profile.py`
 
 - New.
-- Purpose: Step 2 standalone execution script generation.
+- Purpose: convert CPT data into a soil profile for settlement calculation.
 - Required changes:
-  - Load/accept `CalculationGraph`.
-  - Topologically sort explicit forward edges.
-  - Resolve node summaries from registry.
-  - Render import statements for domain types and node functions.
-  - Generate deterministic variable names from output types.
-  - Handle variable-name collisions by suffixing with node IDs.
-  - Resolve function arguments in `NodeSummary.inputs` order by graph edges using downstream parameter names (`Edge.to_input`) and input types.
-  - Generate `run() -> TerminalOutputType` and `__main__` block.
-  - Write to `runs/run_{graph.name}.py`.
+  - Add a `@node(node_type="computation", ...)` function:
+
+```text
+interpret_cpt_soil_profile(cpt: CptData) -> SoilProfile
+```
+
+  - Use simple deterministic interpretation logic, for example grouping CPT depth ranges into layers and deriving `compressibility_per_kpa` inversely from average cone resistance.
+  - Keep formulas simple and documented in metadata/assumptions.
 - Key types/functions/classes:
-  - `topological_sort`
-  - `generate_script_source`
-  - `write_run_script`
+  - `interpret_cpt_soil_profile`
 - Dependencies:
-  - `CalculationGraph`, registry summaries, naming helpers
+  - `calc_types.cpt.CptData`
+  - `calc_types.soil.SoilLayer`
+  - `calc_types.soil.SoilProfile`
+  - `registry.decorators.node`
 - Tests:
-  - `tests/core/test_script_generation.py`
+  - Call with `hypothetical_cpt_data()` and assert a valid non-empty `SoilProfile`.
 
-### `dinoponera/agent/__init__.py`
-
-- New.
-- Purpose: mark agent package.
-- Required changes: minimal.
-- Key types/functions/classes: Not applicable.
-- Dependencies: Not applicable.
-- Tests: Not directly required.
-
-### `dinoponera/agent/io.py`
+### `registry/nodes/derive_settlement_parameters_from_cpt.py`
 
 - New.
-- Purpose: user interaction boundary.
+- Purpose: derive settlement load parameters from CPT data for the CPT settlement path.
 - Required changes:
-  - Define `UserInteractor` protocol.
-  - Implement `ConsoleInteractor`.
-  - Define or import `ApplicabilityResponse` so applicability decisions distinguish `chosen`, `rejected_all`, and `unsure`.
-  - Define or import `SourceGapResponse` so no-candidate/source-gap decisions distinguish `data_retrieval`, `user_input`, and `missing_computation`.
-  - Keep all terminal prompting out of core modules.
+  - Add a `@node(node_type="computation", ...)` function:
+
+```text
+derive_settlement_parameters_from_cpt(cpt: CptData) -> SettlementParameters
+```
+
+  - Use deterministic illustrative logic, for example selecting a representative `surface_load_kpa` from CPT strength or returning a documented fixed value based on the hypothetical CPT source.
+  - Result must be valid and positive for manual testing.
 - Key types/functions/classes:
-  - `UserInteractor`
-  - `ConsoleInteractor`
+  - `derive_settlement_parameters_from_cpt`
 - Dependencies:
-  - shared models
+  - `calc_types.cpt.CptData`
+  - `calc_types.settlement.SettlementParameters`
+  - `registry.decorators.node`
 - Tests:
-  - `tests/agent/test_io.py`
+  - Call with `hypothetical_cpt_data()` and assert a positive `surface_load_kpa`.
 
-### `dinoponera/agent/planning.py`
+### `registry/nodes/calculate_settlement.py`
 
 - New.
-- Purpose: Phase 1 and Phase 2 orchestration.
+- Purpose: terminal settlement calculation node.
 - Required changes:
-  - Directly import/call BAML-generated `baml_identify_goal` and `baml_extend_graph` locally in this module.
-  - Implement Phase 1 clarification loop.
-  - Implement goal confirmation gate.
-  - Implement Phase 2 graph-building loop.
-  - Implement applicability-check handling through structured `ApplicabilityResponse`.
-  - Implement Phase 2 `NoCandidate` handling through the same source-gap path used by lint: ask whether the unresolved named input should be a data retrieval leaf, a user input leaf, or a missing computation node.
-  - Use BAML-generated objects directly for BAML results; do not depend on Python-defined BAML result models.
-  - Raise/report `MissingNodeError` for missing terminal nodes and for dependency gaps the user classifies as missing computation nodes.
-  - Run pure lint and own the interactive lint-resolution loop.
-  - Call deterministic leaf stub generation for data-retrieval/user-input leaf gaps.
-  - Run graph review.
-  - Serialize approved graph to `graphs/{name}.json`.
+  - Add a `@node(node_type="computation", ...)` function:
+
+```text
+calculate_settlement(
+  soil_profile: SoilProfile,
+  parameters: SettlementParameters,
+) -> SettlementResult
+```
+
+  - Compute each layer contribution:
+
+```text
+thickness_m = layer.bottom_m - layer.top_m
+settlement_mm = parameters.surface_load_kpa * layer.compressibility_per_kpa * thickness_m
+```
+
+  - Sum `total_settlement_mm`.
+  - Include result notes stating the calculation is illustrative/manual-test only and not a design-standard settlement method.
 - Key types/functions/classes:
-  - `identify_goal_loop`
-  - `build_graph_loop`
-  - `plan_calculation`
-  - `MissingNodeError`
+  - `calculate_settlement`
 - Dependencies:
-  - BAML generated functions
-  - registry index module
-  - core models/traversal/lint/render/naming
-  - `UserInteractor`
+  - `calc_types.soil.SoilProfile`
+  - `calc_types.settlement.SettlementParameters`
+  - `calc_types.settlement.SettlementLayerContribution`
+  - `calc_types.settlement.SettlementResult`
+  - `registry.decorators.node`
 - Tests:
-  - `tests/agent/test_planning.py` with mocked BAML calls and fake interactors.
+  - Directly call with known `SoilProfile` and `SettlementParameters`.
+  - Assert layer contributions and total.
 
-### `calc_types/__init__.py`
+### `registry/nodes/manual_pile_geometry.py`
 
 - New.
-- Purpose: root-level domain type package.
+- Purpose: manual/design source node for pile geometry.
 - Required changes:
-  - Empty initial package marker is acceptable.
-  - Implementation may add small example/test-only domain types if needed, but production seed types are not required unless chosen.
-- Key types/functions/classes: domain Pydantic models added by engineers later.
-- Dependencies:
-  - Pydantic for actual domain type files.
-- Tests:
-  - Import path tests when sample types are added.
+  - Add a `@node(node_type="user_input", ...)` zero-argument function:
 
-### `registry/__init__.py`
+```text
+manual_pile_geometry() -> PileGeometry
+```
 
-- New.
-- Purpose: root-level registry package marker.
-- Required changes: minimal.
-- Key types/functions/classes: Not applicable.
-- Dependencies: Not applicable.
-- Tests: Not directly required.
-
-### `registry/decorators.py`
-
-- New.
-- Purpose: node metadata decorator.
-- Required changes:
-  - Implement `NodeMetadata` dataclass.
-  - Implement `node(**kwargs)` decorator that attaches `_node_metadata` to function objects.
+  - To keep the pile CPT manual test easier to run, this node should return deterministic sample geometry rather than prompt interactively, unless the implementation agent chooses to also patch prompt behavior in tests.
+  - Metadata should clearly state it is a representative manual design input for testing.
 - Key types/functions/classes:
-  - `NodeMetadata`
-  - `node`
+  - `manual_pile_geometry`
 - Dependencies:
-  - `dataclasses`
+  - `calc_types.piled_foundation.PileGeometry`
+  - `registry.decorators.node`
 - Tests:
-  - `tests/core/test_registry_introspection.py`
+  - Assert returned diameter and embedded length are positive.
+  - Verify registry summary node type is `user_input`.
+- Note:
+  - The user explicitly selected interactive prompt nodes only for manual settlement sources. Pile geometry was accepted as a separate design input, but not explicitly required to be interactive. The conservative default for runnable manual tests is deterministic sample geometry.
+
+### `registry/nodes/derive_pile_foundation_parameters_from_cpt.py`
+
+- New.
+- Purpose: derive pile resistance parameters from CPT data.
+- Required changes:
+  - Add a `@node(node_type="computation", ...)` function:
+
+```text
+derive_pile_foundation_parameters_from_cpt(cpt: CptData) -> PileFoundationParameters
+```
+
+  - Use simple deterministic correlations from CPT data, for example:
+    - average cone resistance to derive `unit_base_resistance_kpa`;
+    - average sleeve friction or a fraction of cone resistance to derive `unit_shaft_resistance_kpa`;
+    - fixed `resistance_factor`, e.g. `2.0`.
+  - Keep metadata and result assumptions clear that this is illustrative/manual-test logic.
+- Key types/functions/classes:
+  - `derive_pile_foundation_parameters_from_cpt`
+- Dependencies:
+  - `calc_types.cpt.CptData`
+  - `calc_types.piled_foundation.PileFoundationParameters`
+  - `registry.decorators.node`
+- Tests:
+  - Call with `hypothetical_cpt_data()` and assert positive resistance values and `resistance_factor > 0`.
+
+### `registry/nodes/calculate_pile_foundation_capacity.py`
+
+- New.
+- Purpose: terminal piled-foundation capacity calculation node.
+- Required changes:
+  - Add a `@node(node_type="computation", ...)` function:
+
+```text
+calculate_pile_foundation_capacity(
+  geometry: PileGeometry,
+  parameters: PileFoundationParameters,
+  cpt: CptData,
+) -> PileFoundationResult
+```
+
+  - Use the simplified shaft + base capacity formula:
+
+```text
+perimeter_m = pi * geometry.diameter_m
+base_area_m2 = pi * geometry.diameter_m**2 / 4
+shaft_capacity_kn = parameters.unit_shaft_resistance_kpa * perimeter_m * geometry.embedded_length_m
+base_capacity_kn = parameters.unit_base_resistance_kpa * base_area_m2
+ultimate_capacity_kn = shaft_capacity_kn + base_capacity_kn
+design_capacity_kn = ultimate_capacity_kn / parameters.resistance_factor
+```
+
+  - Consume `cpt` directly as required by the accepted decision. Use it in notes or a simple consistency check, such as reporting `cpt.source_name` and number of points in result notes. Do not ignore the argument entirely.
+  - Include result notes stating the calculation is illustrative/manual-test only and CPT-required.
+- Key types/functions/classes:
+  - `calculate_pile_foundation_capacity`
+- Dependencies:
+  - `math.pi`
+  - `calc_types.cpt.CptData`
+  - `calc_types.piled_foundation.PileGeometry`
+  - `calc_types.piled_foundation.PileFoundationParameters`
+  - `calc_types.piled_foundation.PileFoundationResult`
+  - `registry.decorators.node`
+- Tests:
+  - Directly call with known geometry, parameters, and CPT data.
+  - Assert stable shaft, base, ultimate, and design capacity values.
 
 ### `registry/index.py`
 
-- New.
-- Purpose: source of truth for registered node functions.
+- Existing.
+- Purpose: explicit source of truth for registered nodes.
 - Required changes:
-  - Define `NODES = []` initially or with example nodes if implementation chooses to seed examples.
-  - Implement `summaries()`, `get()`, `get_summary()`, and `exists()`.
-  - Delegate summary construction to `dinoponera.core.registry_introspection.build_summary`.
-  - Fail clearly on duplicate node IDs.
+  - Import all new node functions.
+  - Append all new node functions to `NODES`.
+  - Preserve existing example nodes and registry helper functions.
 - Key types/functions/classes:
   - `NODES`
-  - `summaries`
-  - `get`
-  - `get_summary`
-  - `exists`
 - Dependencies:
-  - hand-authored node imports
-  - `build_summary`
+  - new `registry.nodes.*` modules.
 - Tests:
-  - `tests/core/test_registry_index.py`
+  - `registry_index.summaries()` includes all new node IDs.
+  - No duplicate node IDs.
+  - New node summaries expose expected input/output import paths.
 
-### `registry/nodes/__init__.py`
-
-- New.
-- Purpose: node package marker.
-- Required changes: minimal.
-- Key types/functions/classes: Not applicable.
-- Dependencies: Not applicable.
-- Tests: Not directly required.
-
-### `graphs/`
-
-- New directory.
-- Purpose: approved serialized `CalculationGraph` JSON files.
-- Required changes:
-  - Planning writes `graphs/{graph.name}.json` after approval.
-  - If committed while empty, add a placeholder only if repository policy requires it; otherwise directory may be created by implementation/runtime.
-- Key types/functions/classes: Not applicable.
-- Dependencies: Not applicable.
-- Tests:
-  - planning serialization tests should use temporary graph output directories where practical.
-
-### `runs/`
-
-- New directory.
-- Purpose: generated standalone execution scripts.
-- Required changes:
-  - Script generation writes `runs/run_{graph.name}.py`.
-  - If committed while empty, add a placeholder only if repository policy requires it; otherwise directory may be created by implementation/runtime.
-- Key types/functions/classes: Not applicable.
-- Dependencies: Not applicable.
-- Tests:
-  - script generation tests should use temporary run output directories where practical.
-
-### BAML project/config files
-
-- New; exact paths are unknown from current repository.
-- Purpose: define BAML schemas/functions/prompts/tests for MVP planning.
-- Required changes:
-  - Add BAML definitions for:
-    - `baml_identify_goal`
-    - `baml_extend_graph`
-  - Configure provider/model according to BAML/Anthropic docs or the selected provider docs.
-  - Define BAML-native input and output object structures for both functions directly in `.baml` files.
-  - Do not require Python Pydantic result models for BAML function outputs.
-  - Ensure generated BAML objects expose fields needed by `planning.py` for graph mutation, including node IDs, rationales, updated state summaries, applicability questions/candidates, missing-node descriptions, and unresolved input name/type context.
-  - Add at least two BAML-native tests directly in `.baml` files for `baml_identify_goal`.
-  - Add at least two BAML-native tests directly in `.baml` files for `baml_extend_graph`.
-  - Document the exact BAML test/validation command introduced by the implementation.
-- Key types/functions/classes:
-  - BAML classes corresponding to the planner callflow, including BAML-side representations of `NodeInput`, `NodeSummary`, `CalculationGraph`, `StateSummary`, and output variants.
-  - BAML functions `baml_identify_goal` and `baml_extend_graph`.
-- Dependencies:
-  - BAML tooling.
-  - Provider credentials/config required by selected BAML setup.
-- Tests:
-  - BAML-native tests in `.baml` files are required and should be run during development.
-
-### `tests/core/test_models.py`
+### `tests/core/test_geotechnical_nodes.py`
 
 - New.
-- Purpose: Pydantic model tests.
+- Purpose: focused unit tests for geotechnical types, nodes, formulas, prompt behavior, and registry summaries.
 - Required tests:
-  - valid model construction
-  - invalid/missing fields
-  - `CalculationGraph.has_edge(to, to_input, type)`
-  - named inputs allow two parameters with the same type on one node
-  - `ApplicabilityResponse.kind` and `SourceGapResponse.kind` reject invalid values
-  - JSON round-trip for graph serialization
-
-### `tests/core/test_naming.py`
-
-- New.
-- Purpose: naming helper tests.
-- Required tests:
-  - `normalise_name("Settlement Analysis") == "settlement_analysis"`
-  - punctuation/parentheses normalization
-  - PascalCase type to snake_case variable conversion
-
-### `tests/core/test_registry_introspection.py`
-
-- New.
-- Purpose: decorator and introspection tests.
-- Required tests:
-  - metadata attached by `@node`
-  - `build_summary()` extracts inputs/output full paths
-  - missing metadata fails
-  - missing annotations fail
-  - primitive/raw I/O annotations fail or are rejected according to implementation policy
-
-### `tests/core/test_registry_index.py`
-
-- New.
-- Purpose: `registry/index.py` behavior tests.
-- Required tests:
-  - `summaries()` returns summaries for `NODES`
-  - `get()` returns expected function
-  - `get_summary()` returns expected summary
-  - `exists()` true/false behavior
-  - duplicate node ID failure
-  - unknown node ID failure
-
-### `tests/core/test_traversal.py`
-
-- New.
-- Purpose: breadth-first unresolved-input traversal tests.
-- Required tests:
-  - first unresolved named input is returned in graph node order
-  - resolved inputs are skipped
-  - leaf nodes are skipped
-  - traversal returns `None` for complete graph
-
-### `tests/core/test_lint.py`
-
-- New.
-- Purpose: graph lint tests.
-- Required tests:
-  - clean graph passes
-  - missing incoming named input fails clearly
-  - duplicate incoming edge for same consumer/input-name/type fails clearly
-  - cycle detection fails clearly
-  - unknown node IDs fail clearly
-
-### `tests/core/test_leaf_stub_generation.py`
-
-- New.
-- Purpose: deterministic leaf stub generation tests.
-- Required tests:
-  - `data_retrieval` stub node ID uses `reader_<type_name>` naming rule
-  - `user_input` stub node ID uses `prompt_<type_name>` naming rule
-  - collisions append numeric suffixes
-  - generated file imports the output type and raises `NotImplementedError`
-  - `registry/index.py` is updated in the explicit `NODES` style
-  - generated node is appended to in-memory `NODES` and visible to `summaries()` without process restart
-
-### `tests/core/test_render.py`
-
-- New.
-- Purpose: graph review rendering tests.
-- Required tests:
-  - rendered graph includes nodes, node types, outputs, and connections
-  - rendered text is stable enough for review assertions
-
-### `tests/core/test_script_generation.py`
-
-- New.
-- Purpose: Step 2 script generation tests.
-- Required tests:
-  - topological sort uses producer → consumer edges correctly
-  - generated script imports node functions and type annotations
-  - generated variable names are deterministic
-  - variable-name collisions are suffixed with node IDs
-  - downstream call arguments are resolved by graph edges using `Edge.to_input`
-  - terminal node return annotation is generated
-  - `__main__` block is generated
-  - optional smoke import/run using simple test nodes
-
-### `tests/agent/test_io.py`
-
-- New.
-- Purpose: interactor tests.
-- Required tests:
-  - fake interactor protocol compatibility where useful
-  - console option parsing for candidate/approval choices where practical
-
-### `tests/agent/test_planning.py`
-
-- New.
-- Purpose: planner orchestration tests with mocked BAML calls.
-- Required tests:
-  - Phase 1 clarification loop
-  - goal confirmation accepted
-  - goal confirmation rejected/restarted
-  - missing terminal node reports `MissingNodeError`
-  - Phase 2 `ConnectExisting` path
-  - Phase 2 `AddFromRegistry` path
-  - Phase 2 `ApplicabilityCheck` path
-  - Phase 2 `NoCandidate` path creates a leaf stub when user chooses data retrieval
-  - Phase 2 `NoCandidate` path creates a leaf stub when user chooses user input
-  - Phase 2 `NoCandidate` path raises `MissingNodeError` when user classifies the gap as missing computation
-  - approved graph serialization path
-  - reset path
+  - `hypothetical_cpt_data()` returns valid `CptData` with non-empty points.
+  - `interpret_cpt_soil_profile(hypothetical_cpt_data())` returns a non-empty `SoilProfile`.
+  - `derive_settlement_parameters_from_cpt(hypothetical_cpt_data())` returns positive `surface_load_kpa`.
+  - `prompt_soil_profile()` returns a `SoilProfile` when `builtins.input` is patched with deterministic responses.
+  - `prompt_settlement_parameters()` returns `SettlementParameters` when `builtins.input` is patched.
+  - `calculate_settlement()` produces expected contribution and total values for known inputs.
+  - `manual_pile_geometry()` returns positive geometry.
+  - `derive_pile_foundation_parameters_from_cpt(hypothetical_cpt_data())` returns positive resistance parameters.
+  - `calculate_pile_foundation_capacity()` produces expected capacity values for known inputs.
+  - `registry_index.summaries()` contains:
+    - `prompt_soil_profile`
+    - `prompt_settlement_parameters`
+    - `hypothetical_cpt_data`
+    - `interpret_cpt_soil_profile`
+    - `derive_settlement_parameters_from_cpt`
+    - `calculate_settlement`
+    - `manual_pile_geometry`
+    - `derive_pile_foundation_parameters_from_cpt`
+    - `calculate_pile_foundation_capacity`
+  - Registry summary input/output types include:
+    - `calc_types.soil.SoilProfile`
+    - `calc_types.cpt.CptData`
+    - `calc_types.settlement.SettlementParameters`
+    - `calc_types.settlement.SettlementResult`
+    - `calc_types.piled_foundation.PileGeometry`
+    - `calc_types.piled_foundation.PileFoundationParameters`
+    - `calc_types.piled_foundation.PileFoundationResult`
 
 ## Testing Strategy
 
-### Python tests
+### Unit tests
 
-Use pytest for deterministic Python components and mocked planner orchestration.
+Add `tests/core/test_geotechnical_nodes.py` with direct node tests and registry summary tests.
 
-Primary command:
-
-```text
-pytest
-```
-
-If the implementation introduces a runner such as `uv`, document the equivalent command, for example:
+Prompt nodes should be tested with patched `builtins.input`. Use an iterator of string responses, for example:
 
 ```text
-uv run pytest
+prompt_soil_profile responses:
+  "2"          # number of layers
+  "sand"       # layer 1 name
+  "0"          # top_m
+  "2"          # bottom_m
+  "0.05"       # compressibility_per_kpa
+  "clay"       # layer 2 name
+  "2"          # top_m
+  "5"          # bottom_m
+  "0.12"       # compressibility_per_kpa
+
+prompt_settlement_parameters responses:
+  "100"        # surface_load_kpa
 ```
 
-Python tests should not require live BAML calls. They should mock the BAML-generated functions imported by `dinoponera/agent/planning.py`.
+### Formula tests
 
-### BAML-native tests
-
-BAML-native tests are required for every BAML function introduced in the MVP. These tests must live in the `.baml` files, not in Python test files.
-
-Required BAML tests:
+Settlement known-value example:
 
 ```text
-baml_identify_goal
-  - at least two native BAML tests
-  - cover a clear goal case and a clarification or missing-terminal case
+surface_load_kpa = 100
+layers:
+  layer A: top=0, bottom=2, compressibility=0.05
+  layer B: top=2, bottom=5, compressibility=0.12
 
-baml_extend_graph
-  - at least two native BAML tests
-  - cover at least AddFromRegistry/ConnectExisting behavior and ambiguity/no-candidate behavior
-  - no-candidate BAML tests only validate the BAML output; Python tests validate source-gap routing to leaf stubs or MissingNodeError
+contributions:
+  A = 100 * 0.05 * 2 = 10 mm
+  B = 100 * 0.12 * 3 = 36 mm
+total = 46 mm
 ```
 
-The implementation agent must add and document the exact BAML validation/test command because no BAML tooling currently exists in the repository. These tests are intended to be run during development, not skipped as optional Python integration tests.
+Pile known-value tests should use `math.pi` expectations with `pytest.approx`.
 
-### Regression focus
+### Registry tests
 
-Add regression tests for:
+Use existing registry patterns from `tests/core/test_registry.py`:
 
-- type paths are full import paths and round-trip through JSON
-- `NodeSummary.inputs` preserves parameter names, including duplicate input types
-- `Edge.to_input` disambiguates same-type downstream parameters
-- graph edges remain producer → consumer and target a named downstream input
-- leaf nodes are skipped by traversal
-- same-type transformer nodes remain representable through explicit edges
-- generated scripts do not call BAML
-- generated scripts import from root-level `calc_types` and `registry.nodes`
-- missing registry annotations fail before planning proceeds
-- Phase 2 no-candidate source gaps can become data-retrieval/user-input stubs instead of failing immediately
+- call `registry_index.summaries()`;
+- assert expected node IDs exist;
+- assert expected node types and input/output type paths.
+
+### Manual validation after implementation
+
+Run deterministic tests:
+
+```bash
+uv run --extra dev pytest -q
+```
+
+Then manually compose calculation paths with the framework. Example terminal-node entrypoints:
+
+```bash
+uv run python -m dinoponera.agent.deterministic_planning calculate_settlement --name settlement_manual_test
+```
+
+```bash
+uv run python -m dinoponera.agent.deterministic_planning calculate_pile_foundation_capacity --name piled_foundation_cpt_test
+```
+
+Because settlement has multiple producers for `SoilProfile` and `SettlementParameters`, manual planning may ask the user to choose between prompt/manual and CPT-derived producer nodes.
 
 ## Migration / Backward Compatibility
 
-Not applicable for existing application behavior because there is no implemented calculation-agent system yet.
-
-Compatibility constraints for new artifacts:
-
-- Approved graphs are serialized as Pydantic JSON using `CalculationGraph`.
-- Graph edges store type strings and downstream input names, not live type objects.
-- Generated scripts depend on import paths remaining stable:
-  - domain types under `calc_types`
-  - nodes under `registry.nodes`
-- Node IDs are Python function names and should remain stable once graphs reference them.
-- Post-MVP authoring must preserve the MVP registry contract if added later.
+- Existing example doubling nodes and graphs remain valid.
+- Existing graph JSON format is unchanged.
+- Existing script generation behavior is unchanged.
+- New Pydantic type import paths become graph contracts if the user later serializes manually approved graphs. Avoid renaming these new models/modules after manual graphs are created.
+- Adding new registry nodes can introduce additional candidates during manual/BAML planning. Node metadata must clearly distinguish manual prompt sources from CPT-derived producers.
 
 ## Risks and Mitigations
 
-### Risk: BAML setup is unknown
+### Risk: Settlement producer ambiguity during manual planning
 
-- Unknown: exact BAML dependency, file layout, generated client import path, provider/model identifier, and test command.
-- Why it matters: planner modules must import generated BAML functions, and required BAML-native tests must run during development.
-- Conservative default: introduce BAML following its current tooling conventions, localize imports to `dinoponera/agent/planning.py`, and document the exact BAML test command.
+- Why it matters: both `prompt_soil_profile` and `interpret_cpt_soil_profile` produce `SoilProfile`; both `prompt_settlement_parameters` and `derive_settlement_parameters_from_cpt` produce `SettlementParameters`.
+- Mitigation: use clear node names, descriptions, and `when_to_use` metadata. The deterministic planner already has an applicability/user-choice path for ambiguous candidates.
+- Status: Accepted.
+
+### Risk: Interactive prompt nodes block generated-script execution
+
+- Why it matters: `prompt_soil_profile` and `prompt_settlement_parameters` call `input()` at runtime.
+- Mitigation: this was explicitly chosen for the manual settlement source path. Tests must patch `builtins.input`. CPT paths remain deterministic.
+- Status: Accepted.
+
+### Risk: Pile geometry source is deterministic despite being manual/design input
+
+- Why it matters: the user explicitly required interactive prompt nodes for manual settlement, but did not explicitly require pile geometry to prompt. A deterministic geometry node is more convenient for manual CPT testing.
+- Conservative default: implement `manual_pile_geometry()` as a deterministic `user_input` source with representative sample geometry and clear metadata. If interactive pile geometry is desired later, add a separate prompt node.
 - Status: Accepted with assumptions.
 
-### Risk: Root-level packages may need packaging configuration
+### Risk: Formulas are not production-grade
 
-- Unknown: whether packaging/distribution will include `calc_types` and `registry` by default.
-- Why it matters: generated scripts import these packages directly.
-- Conservative default: add `__init__.py` files and verify imports in tests from the repository root.
-- Status: Accepted with assumptions.
-
-### Risk: Full import-path strings can become stale
-
-- Why it matters: serialized graphs and generated scripts depend on type and node import paths.
-- Mitigation: keep node IDs and type modules stable; treat renames as compatibility-breaking until a migration strategy exists.
+- Why it matters: geotechnical calculations can be safety-critical.
+- Mitigation: node metadata and result notes must state these are illustrative/manual-test calculations, not design-standard implementations.
 - Status: Accepted.
 
-### Risk: Hand-authored registry import errors can break planning
+### Risk: No real CPT file parsing
 
-- Why it matters: `registry/index.py` imports node modules directly.
-- Mitigation: fail clearly during registry summary construction; test missing metadata/annotations/import assumptions.
+- Why it matters: the requested branch mentions a hypothetical file.
+- Mitigation: represent the hypothetical file through `CptData.source_name` and deterministic embedded CPT points. Add real file parsing later as a separate node/type design.
 - Status: Accepted.
 
-### Risk: Generated script behavior can diverge from planned graph
+### Risk: Direct CPT argument in pile terminal node could be unused
 
-- Why it matters: the script is the execution artifact and audit trail.
-- Mitigation: generate calls only from explicit graph edges and registry summaries; test topological order, imports, variables, and arguments.
-- Status: Accepted.
-
-### Risk: BAML-native tests may be slower or require credentials
-
-- Why it matters: user requires these tests to run during development.
-- Mitigation: implementation must configure BAML tooling and document required environment/provider setup. Do not replace these with Python-skipped tests.
+- Why it matters: user clarified that `calculate_pile_foundation_capacity` needs geometry, parameters, and CPT.
+- Mitigation: consume `cpt` in the function by including CPT source/point-count in result notes or performing a simple consistency check. Do not leave it unused.
 - Status: Accepted.
 
 ## Validation Checklist
 
 Implementation checklist:
 
-- [x] `pyproject.toml` includes Pydantic, pytest, and BAML tooling.
-- [x] `dinoponera/core/` modules exist.
-- [x] `dinoponera/agent/` modules exist.
-- [x] `calc_types/` exists with `__init__.py`.
-- [x] `registry/` exists with `decorators.py`, `index.py`, and `nodes/`.
-- [x] `graphs/` output path is created or handled by planning code.
-- [x] `runs/` output path is created or handled by script-generation code.
-- [x] `NodeInput`, `NodeSummary`, `Edge`, `CalculationGraph`, `QA`, `StateSummary`, `UnresolvedInput`, `ApplicabilityResponse`, and `SourceGapResponse` are Pydantic models.
-- [x] `CalculationGraph.model_dump_json()` and `CalculationGraph.model_validate_json()` are used for graph files.
-- [x] `Edge.to_input` and `UnresolvedInput.input_name` are used anywhere a downstream input is matched or satisfied.
-- [x] `@node` attaches `_node_metadata`.
-- [x] `build_summary()` uses function signatures and metadata.
-- [x] Registry rejects/clearly fails missing metadata and missing annotations.
-- [x] `BreadthFirstTraversal` skips `data_retrieval` and `user_input` nodes.
-- [x] Lint detects cycles and unsatisfied named inputs.
-- [x] Lint remains pure and does not depend on `UserInteractor` or mutate registry files.
-- [x] Leaf stub generation creates data-retrieval/user-input stubs and updates `registry/index.py` plus in-memory `NODES`.
-- [x] Phase 2 `NoCandidate` uses source-gap resolution instead of immediately failing; it only raises `MissingNodeError` when the user classifies the gap as a missing computation node.
-- [x] Phase 1 and Phase 2 planning loops are implemented.
-- [x] Direct BAML calls are localized to `dinoponera/agent/planning.py`.
-- [x] BAML function input/output object structures are declared in `.baml` files, not mirrored as Python Pydantic result models.
-- [x] Core modules do not import BAML.
-- [x] Core modules do not call `input()` or `print()` for decisions.
-- [x] Approved graphs are written to `graphs/{name}.json`.
-- [x] Script generation writes `runs/run_{graph.name}.py`.
-- [x] Generated scripts contain no BAML calls.
-- [x] Python tests exist for core and agent modules.
-- [x] BAML-native tests exist in `.baml` files for the Python wrapper concepts `baml_identify_goal` and `baml_extend_graph` via generated BAML functions `IdentifyGoal` and `ExtendGraph`, at least two tests each.
-- [x] Development validation documentation includes both `pytest` and the BAML-native test command.
+- [ ] `calc_types/soil.py` exists and defines `SoilLayer`, `SoilProfile`.
+- [ ] `calc_types/cpt.py` exists and defines `CptPoint`, `CptData`.
+- [ ] `calc_types/settlement.py` exists and defines `SettlementParameters`, `SettlementLayerContribution`, `SettlementResult`.
+- [ ] `calc_types/piled_foundation.py` exists and defines `PileGeometry`, `PileFoundationParameters`, `PileFoundationResult`.
+- [ ] `registry/nodes/prompt_soil_profile.py` exists and defines decorated `prompt_soil_profile() -> SoilProfile`.
+- [ ] `registry/nodes/prompt_settlement_parameters.py` exists and defines decorated `prompt_settlement_parameters() -> SettlementParameters`.
+- [ ] `registry/nodes/hypothetical_cpt_data.py` exists and defines decorated `hypothetical_cpt_data() -> CptData`.
+- [ ] `registry/nodes/interpret_cpt_soil_profile.py` exists and defines decorated `interpret_cpt_soil_profile(cpt: CptData) -> SoilProfile`.
+- [ ] `registry/nodes/derive_settlement_parameters_from_cpt.py` exists and defines decorated `derive_settlement_parameters_from_cpt(cpt: CptData) -> SettlementParameters`.
+- [ ] `registry/nodes/calculate_settlement.py` exists and defines decorated `calculate_settlement(soil_profile: SoilProfile, parameters: SettlementParameters) -> SettlementResult`.
+- [ ] `registry/nodes/manual_pile_geometry.py` exists and defines decorated `manual_pile_geometry() -> PileGeometry`.
+- [ ] `registry/nodes/derive_pile_foundation_parameters_from_cpt.py` exists and defines decorated `derive_pile_foundation_parameters_from_cpt(cpt: CptData) -> PileFoundationParameters`.
+- [ ] `registry/nodes/calculate_pile_foundation_capacity.py` exists and defines decorated `calculate_pile_foundation_capacity(geometry: PileGeometry, parameters: PileFoundationParameters, cpt: CptData) -> PileFoundationResult`.
+- [ ] `registry/index.py` imports all new node functions.
+- [ ] `registry/index.py` appends all new node functions to `NODES`.
+- [ ] All new registry node inputs and outputs are Pydantic `BaseModel` subclasses, not primitives.
+- [ ] New node metadata clearly distinguishes manual prompt sources, deterministic hypothetical CPT source, interpretation nodes, and terminal calculations.
+- [ ] No checked-in `graphs/*.json` files are added for these geotechnical cases.
+- [ ] No checked-in `runs/run_*.py` files are added for these geotechnical cases.
+- [ ] `tests/core/test_geotechnical_nodes.py` covers node execution, prompt behavior, formulas, and registry summaries.
+- [ ] `uv run --extra dev pytest -q` passes.
 
 Implementability checks against current repo:
 
-- [x] `calc_agent_design.md` exists and supports this plan.
-- [x] `pyproject.toml` exists and is the correct place to add dependencies.
-- [x] `dinoponera/` exists and can contain framework modules.
-- [x] `tests/` exists and can contain pytest tests.
-- [x] Proposed source modules are new except `pyproject.toml`.
-- [x] No existing source module migration is required.
-- [x] Conflicting `old/DESIGN.md` is explicitly not used as the source of truth.
+- [x] `calc_types/` exists and already contains importable Pydantic models in `calc_types/example.py`.
+- [x] `registry/nodes/` exists and contains decorated node examples.
+- [x] `registry/decorators.py` exists and provides `@node`.
+- [x] `registry/index.py` exists and is the correct explicit registry file to update.
+- [x] `dinoponera/core/registry_introspection.py` supports the proposed Pydantic model annotations.
+- [x] `dinoponera/core/lint.py` supports multi-input computation nodes with named inputs.
+- [x] `dinoponera/core/script_generation.py` supports generated scripts for multi-input nodes using `Edge.to_input`.
+- [x] `tests/core/` exists and already contains registry/script-generation tests to copy.
+- [x] Existing dependency set already includes Pydantic; no new dependency is required.
+- [x] Validation command is discoverable from `README.md`.
 
 ## Open Questions
 
-### Exact BAML setup
+### Exact prompt wording for interactive settlement nodes
 
-Unknown: BAML dependency names, generated client import paths, `.baml` file layout, provider/model identifier, and validation/test command.
+Unknown: the exact user-facing prompt strings for `prompt_soil_profile()` and `prompt_settlement_parameters()`.
 
-Why it matters: the MVP planner depends on BAML function calls, and BAML-native tests are required.
+Why it matters: tests must provide responses in the expected order.
 
-Conservative default: the implementation agent should introduce BAML according to current BAML tooling conventions, keep direct BAML imports localized to `dinoponera/agent/planning.py`, add native tests inside `.baml` files, and document the command used to run them.
-
-Status: Accepted with assumptions.
-
-### Seed domain types and nodes
-
-Unknown: whether the implementation should include example production domain types/nodes or only framework scaffolding.
-
-Why it matters: BAML tests and smoke tests need representative registry summaries, but production engineering nodes may require domain decisions outside this MVP.
-
-Conservative default: include minimal test fixtures or clearly marked example nodes only where needed for tests; keep production registry initially empty unless the implementer is explicitly asked to seed real engineering calculations.
+Conservative default: keep prompts minimal and sequential: number of layers, then per-layer name/top/bottom/compressibility, then surface load.
 
 Status: Accepted with assumptions.
 
-### Packaging of root-level packages
+### Exact hypothetical CPT values
 
-Unknown: whether the project will later be packaged/distributed beyond running from repo root.
+Unknown: the exact CPT points to embed in `hypothetical_cpt_data()`.
 
-Why it matters: generated scripts import `calc_types` and `registry.nodes` directly.
+Why it matters: derived parameter and result tests depend on deterministic values.
 
-Conservative default: add `__init__.py` package markers and validate imports from the repository root. Defer distribution packaging refinements.
+Conservative default: use a short, simple set of positive CPT points at increasing depths, documented as illustrative and not from a real project.
 
 Status: Accepted with assumptions.
 
-### Post-MVP node authoring
+### Whether pile geometry should be interactive
 
-Deferred: BAML-assisted generation of types and nodes is outside this MVP.
+Unknown: whether pile geometry should prompt at runtime like manual settlement sources.
 
-Why it matters: missing nodes currently require manual registry authoring and restart, except leaf stubs in lint as defined for Step 1.
+Why it matters: an interactive pile geometry node would make generated pile scripts prompt; a deterministic source makes manual CPT testing easier.
 
-Conservative default: keep missing-node behavior aligned with Step 1 and defer authoring loop design.
+Conservative default: implement `manual_pile_geometry()` as a deterministic `user_input` node returning representative sample geometry, with metadata stating it is a manual design input for testing.
 
-Status: Deferred.
-
-### Conditional and iterative calculations
-
-Deferred: the DAG model does not represent runtime conditionals or iterative loops.
-
-Why it matters: some engineering workflows may require branch or iteration logic.
-
-Conservative default: do not support conditional/iterative graph structure in the MVP; encapsulate such logic inside a hand-authored node only if necessary.
-
-Status: Deferred.
+Status: Accepted with assumptions.

@@ -6,14 +6,38 @@ from collections.abc import Callable
 
 from dinoponera.core.models import NodeSummary
 from dinoponera.core.registry_introspection import build_summary
+from registry.nodes.calculate_pile_foundation_capacity import (
+    calculate_pile_foundation_capacity,
+)
+from registry.nodes.calculate_settlement import calculate_settlement
+from registry.nodes.derive_pile_foundation_parameters_from_cpt import (
+    derive_pile_foundation_parameters_from_cpt,
+)
+from registry.nodes.derive_settlement_parameters_from_cpt import (
+    derive_settlement_parameters_from_cpt,
+)
 from registry.nodes.double_value import double_value
 from registry.nodes.example_source_value import example_source_value
 from registry.nodes.format_result import format_result
+from registry.nodes.hypothetical_cpt_data import hypothetical_cpt_data
+from registry.nodes.interpret_cpt_soil_profile import interpret_cpt_soil_profile
+from registry.nodes.manual_pile_geometry import manual_pile_geometry
+from registry.nodes.prompt_settlement_parameters import prompt_settlement_parameters
+from registry.nodes.prompt_soil_profile import prompt_soil_profile
 
 NODES: list[Callable[..., object]] = [
     example_source_value,
     double_value,
     format_result,
+    prompt_soil_profile,
+    prompt_settlement_parameters,
+    hypothetical_cpt_data,
+    interpret_cpt_soil_profile,
+    derive_settlement_parameters_from_cpt,
+    calculate_settlement,
+    manual_pile_geometry,
+    derive_pile_foundation_parameters_from_cpt,
+    calculate_pile_foundation_capacity,
 ]
 
 
